@@ -802,10 +802,25 @@ impl<T: Clone> Shared<T> {
             }
         }
 
+        // 
+        // let mut watchers = self.watchers.lock().expect("poisoned");
+        // let in_queue = watchers
+        //     .iter()
+        //     .any(|existing| existing.will_wake(cx.waker()));
+        // println!("watchers.len() {}", watchers.len());
+        // 
+        // if !in_queue {
+        //     watchers.push_back(cx.waker().to_owned());
+        // }
+        // drop(watchers);
+        // 
+
         self.watchers
             .lock()
             .expect("poisoned")
             .push_back(cx.waker().to_owned());
+
+        println!("watchers.len() {}", self.watchers.lock().expect("poisoned").len());
 
         #[cfg(watcher_loom)]
         loom::thread::yield_now();
@@ -1433,4 +1448,42 @@ mod tests {
         assert_eq!(watcher_join.peek(), &vec![0, 1]);
         assert!(!watcher_join.update());
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_update_bounded() {
+        use tokio::time::{interval, Duration};
+        let watchable = Watchable::new(0);
+        let mut watch_stream = watchable.watch().stream();
+        let max_tick = 1_000_000_000;
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_nanos(1));            
+            let mut tick_no = 0;
+            loop {
+                tokio::select! {
+                    value = watch_stream.next() => {
+                        if let Some(0) = value {
+                            continue
+                        } else {
+                            panic!("should never get here");
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        // We cancel the other future and start over again
+                        tick_no += 1;
+                        if tick_no > max_tick{
+                            return
+                        }
+                        continue;
+                    }
+                }
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(20), handle)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
 }
